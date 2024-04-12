@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>JOIN P2P + E2E CHAT</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"
+      integrity="sha512-a+SUDuwNzXDvz4XrIcXHuCf089/iJAoN4lmrXJg18XnduKK6YlDHNRalv4yd1N40OKI80tFidF+rqTFKGPoWFQ=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    ></script>
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"
+      integrity="sha512-o/HHmG8jeysxAxgj7HH5ZZnXOwWYS7D9oGVJH+TdRIpEYj01/m9Dm26vmcOtfhou2QbzPXFdnewbEp6v9I0U0g=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    ></script>
+    <style>
+      /* Just simple css for the msgs and timestamps */
+      @media only screen and (max-width: 600px) {
+        .max-w-full {
+          max-width: 100% !important;
+        }
+      }
+      body {
+        font-family: "DejaVu Sans", Arial, Helvetica, sans-serif;
+      }
+      .msg-time {
+        color: blue;
+      }
+
+      .cueMsg {
+        color: orange;
+      }
+
+      .selfMsg {
+        color: green;
+      }
+
+      .peerMsg {
+        color: red;
+      }
+    </style>
+  </head>
+  <body class="bg-gray-700">
+    <div
+      class="bg-white rounded-lg shadow-md p-4 max-w-full mx-auto sm:max-w-full md:max-w-full lg:max-w-lg xl:max-w-xl 2xl:max-w-2xl"
+    >
+      <div class="flex items-center mb-4">
+        <div
+          id="flt"
+          class="w-12 h-12 bg-blue-500 text-white font-bold text-2xl rounded-full flex items-center justify-center mr-4"
+        >
+          C
+        </div>
+        <div class="text-gray-900 font-bold text-md">
+          <div id="receiver-id">ID :</div>
+          <button
+            class="bg-pink-500 text-sm text-white font-bold py-1 px-1 rounded-lg"
+            onclick="copy()"
+          >
+            Copy!
+          </button>
+        </div>
+      </div>
+      <div class="text-gray-700 text-sm" id="status">Show the status</div>
+      <div>
+        <input
+          class="bg-gray-100 rounded-lg p-1 mb-1"
+          type="text"
+          id="key"
+          placeholder="Enter the key"
+        />
+        <button
+          class="bg-yellow-500 text-white text-sm font-bold py-1 px-1 rounded-lg"
+          type="submit"
+          id="getkey"
+          onclick="getkey(event)"
+        >
+          Submit Key
+        </button>
+        <button
+          class="bg-red-500 text-white text-sm font-bold py-1 px-1 rounded-lg"
+          type="submit"
+          id="clearMsgsButton"
+        >
+          Clear Msgs (Local)
+        </button>
+      </div>
+      <div class="mt-4 border-t border-gray-300 pt-4 flex flex-col">
+        <input
+          class="bg-gray-100 rounded-lg p-2 mb-2"
+          type="text"
+          placeholder="Type your message here..."
+          id="sendMessageBox"
+        />
+        <button
+          class="bg-blue-500 text-white font-bold py-2 px-4 rounded-lg"
+          type="button"
+          id="sendButton"
+        >
+          Send
+        </button>
+      </div>
+      <div class="mt-4 overflow-y-auto max-h-96" id="message">
+        <!-- Messages will appear here -->
+      </div>
+    </div>
+
+    <script type="text/javascript">
+      // encryption and decryption mechanism
+
+      function copy() {
+        // Get the text field
+        var copyText = document.getElementById("receiver-id");
+        navigator.clipboard.writeText(
+          String(copyText.innerHTML).split(":")[1].trim()
+        );
+        // can show toast
+      }
+
+      let globalkey;
+      let otherName;
+      let ourName;
+      function getkey(event) {
+        var keyelm = document.getElementById("key");
+        globalkey = keyelm.value;
+        keyelm.value = "";
+        event.currentTarget.innerHTML = "Change Key";
+      }
+
+      function enc(msg) {
+        if (!globalkey) {
+          return msg;
+        }
+        // Encrypt
+        var ciphertext = CryptoJS.AES.encrypt(msg, globalkey).toString();
+        return ciphertext;
+      }
+
+      function dec(ciphertext) {
+        if (!globalkey) {
+          return ciphertext;
+        }
+
+        // Decrypt
+        var bytes = CryptoJS.AES.decrypt(ciphertext, globalkey);
+        var originalText = bytes.toString(CryptoJS.enc.Utf8);
+
+        if (!originalText) {
+          return ciphertext;
+        }
+        return originalText;
+      }
+
+      (function () {
+        var lastPeerId = null;
+        var peer = null; // Own peer object
+        var peerId = null;
+        var conn = null;
+        var recvId = document.getElementById("receiver-id");
+        var status = document.getElementById("status");
+        var message = document.getElementById("message");
+        var standbyBox = document.getElementById("standby");
+        var sendMessageBox = document.getElementById("sendMessageBox");
+        var sendButton = document.getElementById("sendButton");
+        var clearMsgsButton = document.getElementById("clearMsgsButton");
+        var profile = document.getElementById("flt");
+
+        /**
+         * Create the Peer object for our end of the connection.
+         *
+         * Sets up callbacks that handle any events related to our
+         * peer object.
+         */
+        function initialize() {
+          // Create own peer object with connection to shared PeerJS server
+          peer = new Peer(null, {
+            debug: 2,
+          });
+
+          peer.on("open", function (id) {
+            // Workaround for peer.reconnect deleting previous id
+            if (peer.id === null) {
+              peer.id = lastPeerId;
+            } else {
+              lastPeerId = peer.id;
+            }
+
+            recvId.innerHTML = "ID: " + peer.id;
+            status.innerHTML = "Awaiting connection...";
+          });
+          peer.on("connection", function (c) {
+            // Allow only a single connection
+            if (conn && conn.open) {
+              c.on("open", function () {
+                c.send("Already connected to another client");
+                setTimeout(function () {
+                  c.close();
+                }, 500);
+              });
+              return;
+            }
+
+            conn = c;
+            console.log("Connected to: " + conn.peer);
+            status.innerHTML = "Connected";
+            ready();
+          });
+          peer.on("disconnected", function () {
+            status.innerHTML = "Connection lost. Please reconnect";
+            console.log("Connection lost. Please reconnect");
+
+            // Workaround for peer.reconnect deleting previous id
+            peer.id = lastPeerId;
+            peer._lastServerId = lastPeerId;
+            peer.reconnect();
+          });
+          peer.on("close", function () {
+            conn = null;
+            status.innerHTML = "Connection destroyed. Please refresh";
+            console.log("Connection destroyed");
+          });
+          peer.on("error", function (err) {
+            console.log(err);
+            alert("" + err);
+          });
+        }
+
+        /**
+         * Triggered once a connection has been achieved.
+         * Defines callbacks to handle incoming data and connection events.
+         */
+        function ready() {
+          // needed to this here as doing it over peer will trigger in very time a clinet try to connect
+          conn.on("open", function () {
+            // taking name input and then signal to other side
+            ourName = prompt("Please enter your name", "Jhon Dee");
+            if (ourName == null || ourName == "") {
+              ourName = "Me";
+              profile.innerHTML = ourName[0];
+            } else {
+              profile.innerHTML = ourName[0];
+              signal(ourName);
+            }
+          });
+          conn.on("data", function (data) {
+            var cueString = `<span class="cueMsg">Log:Others Name changed to </span>`;
+            switch (data.startsWith("++")) {
+              case true: // has a flow no need to regexify it for now
+                // this case is gonna be used to set the user name talking to each other
+                otherName = data.substring(2);
+                addMessage(cueString + otherName);
+                break;
+              default:
+                addMessage(
+                  `<span class="peerMsg">${otherName}: </span>` + dec(data)
+                );
+                break;
+            }
+          });
+          conn.on("close", function () {
+            status.innerHTML = "Connection reset<br>Awaiting connection...";
+            conn = null;
+          });
+        }
+
+        function addMessage(msg) {
+          var now = new Date();
+          var h = now.getHours();
+          var m = addZero(now.getMinutes());
+          var s = addZero(now.getSeconds());
+
+          if (h > 12) h -= 12;
+          else if (h === 0) h = 12;
+
+          function addZero(t) {
+            if (t < 10) t = "0" + t;
+            return t;
+          }
+
+          message.innerHTML =
+            '<br><span class="msg-time">' +
+            h +
+            ":" +
+            m +
+            ":" +
+            s +
+            "</span>  -  " +
+            msg +
+            message.innerHTML;
+        }
+
+        function clearMessages() {
+          message.innerHTML = "";
+          addMessage("Msgs cleared");
+        }
+
+        // Listen for enter in message box
+        sendMessageBox.addEventListener("keypress", function (e) {
+          var event = e || window.event;
+          var char = event.which || event.keyCode;
+          if (char == "13") sendButton.click();
+        });
+        // Send message
+        sendButton.addEventListener("click", function () {
+          if (conn && conn.open) {
+            var msg = sendMessageBox.value;
+            if (msg) {
+              sendMessageBox.value = "";
+              conn.send(enc(msg)); // sending encrypted msgs
+              console.log("Sent: " + msg);
+              addMessage(`<span class="selfMsg">${ourName}: </span> ` + msg);
+            }
+          } else {
+            console.log("Connection is closed");
+          }
+        });
+
+        /**
+         * Send a signal via the peer connection and add it to the log.
+         * This will only occur if the connection is still alive.
+         */
+        function signal(sigName) {
+          if (conn && conn.open) {
+            conn.send(`++${sigName}`);
+            addMessage(
+              `<span class="cueMsg">Log: Mine Name changed to </span>` + sigName
+            );
+          } else {
+            console.log("Connection is closed");
+          }
+        }
+
+        // Clear messages box
+        clearMsgsButton.addEventListener("click", clearMessages);
+
+        initialize();
+      })();
+    </script>
+  </body>
+</html>
